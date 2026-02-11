@@ -1,0 +1,11 @@
+fastapi
+uvicorn[standard]
+python-multipart
+pypdf
+python-docx
+trafilatura
+chromadb
+sentence-transformers
+transformers
+torch
+openai
