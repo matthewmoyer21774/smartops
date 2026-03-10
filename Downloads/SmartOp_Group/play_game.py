@@ -37,13 +37,12 @@ def compute_recommended_order(inv, forecaster, test_rows, period):
     mean_t3, q_t3 = get_forecasts(period + 3) if period + 3 < n_periods else (0, {0.5: 0, 0.75: 0, 0.9: 0, 0.95: 0})
 
     # --- Simulate forward to estimate inventory at t+2 (without this order) ---
-    # Use mean demand for consumption estimate (balanced between over/under-ordering)
     consume_t = mean_t
     consume_t1 = mean_t1
 
     # Period t: pipeline[0] arrives, demand occurs, age_1 expires, age transition
-    oh0_t = inv.on_hand[0] + inv.pipeline[0]  # age_0 after arrival
-    oh1_t = inv.on_hand[1]                      # age_1
+    oh0_t = inv.on_hand[0] + inv.pipeline[0]
+    oh1_t = inv.on_hand[1]
 
     # Sell FIFO: age_1 first, then age_0
     sell1_t = min(oh1_t, consume_t)
@@ -68,27 +67,17 @@ def compute_recommended_order(inv, forecaster, test_rows, period):
     carry_to_t2_as_age1 = max(0, oh0_after_sell_t1)
 
     # Period t+2: the NEW ORDER arrives as age_0.
-    # Existing inventory at t+2 = carry_to_t2_as_age1 (as age_1)
     existing_at_t2 = carry_to_t2_as_age1
 
     # --- Compute order quantity ---
-    # The order arrives as age_0 at t+2. existing_at_t2 is age_1 (sold first via FIFO).
-    # So effective coverage = existing_at_t2 + order.
-    # Unsold order units at end of t+2 become age_1 at t+3 (second chance to sell).
-
-    # How many periods can this order actually serve?
-    # Order arrives at t+2 (age_0), survives to t+3 (age_1), expires end of t+3.
-    # So it can serve demand at t+2 and t+3 (if t+3 exists in the game).
-    can_serve = min(2, n_periods - (period + 2))  # 1 or 2 periods of useful life
+    can_serve = min(2, n_periods - (period + 2))
 
     # Taper target quantile only when the order has limited selling opportunity
     if can_serve <= 0:
         target_quantile = 0.50
     elif can_serve == 1:
-        # Order arrives at the last period - only one chance to sell, no carryover
         target_quantile = 0.75
     elif n_periods - (period + 2) <= 2:
-        # Order serves 2 periods but those are the final 2 - slight taper
         target_quantile = 0.90
     else:
         target_quantile = 0.95
@@ -100,7 +89,7 @@ def compute_recommended_order(inv, forecaster, test_rows, period):
     if period + 3 < n_periods:
         max_useful = q_t2[target_quantile] + q_t3[0.50]
     else:
-        max_useful = q_t2[target_quantile]  # last period, no t+3
+        max_useful = q_t2[target_quantile]
     need = min(need, max(0, max_useful - existing_at_t2))
 
     # Floor: at least cover the median at t+2
@@ -112,31 +101,57 @@ def compute_recommended_order(inv, forecaster, test_rows, period):
 
 def run_backtest(forecaster, test_rows, demands):
     """Run a backtest with known demands to evaluate the policy."""
+    original_rows = [dict(r) for r in test_rows]
+    original_tail = list(forecaster.training_tail) if forecaster.training_tail else []
+    forecaster.revealed_demands = []
+
+    sim_rows = [dict(r) for r in original_rows]
     inv = PerishableInventory()
     for period in range(len(demands)):
-        order = compute_recommended_order(inv, forecaster, test_rows, period)
+        order = compute_recommended_order(inv, forecaster, sim_rows, period)
         inv.step(order, demands[period])
+        forecaster.update_with_demand(sim_rows, period, demands[period])
     inv.summary()
+
+    # Restore
+    forecaster.training_tail = list(original_tail)
+    forecaster.revealed_demands = []
     return inv.total_cost
 
 
 def run_monte_carlo(forecaster, test_rows, df, n_sims=500, seed=42):
-    """Monte Carlo backtest: sample demands from historical distribution."""
-    import numpy as np
+    """Monte Carlo backtest: sample demands from historical distribution.
+
+    Each simulation uses adaptive lag updates so the forecaster learns
+    from the simulated demands, just like in live play.
+    """
     np.random.seed(seed)
     known = df.dropna(subset=["sales"])["sales"].values.astype(int)
     costs, holds, shorts, expiries = [], [], [], []
 
+    original_rows = [dict(r) for r in test_rows]
+    original_tail = list(forecaster.training_tail) if forecaster.training_tail else []
+
     for _ in range(n_sims):
         inv = PerishableInventory()
-        for p in range(len(test_rows)):
-            order = compute_recommended_order(inv, forecaster, test_rows, p)
+        sim_rows = [dict(r) for r in original_rows]
+        forecaster.training_tail = list(original_tail)
+        forecaster.revealed_demands = []
+
+        for p in range(len(sim_rows)):
+            order = compute_recommended_order(inv, forecaster, sim_rows, p)
             demand = int(np.random.choice(known))
             inv.step(order, demand)
+            forecaster.update_with_demand(sim_rows, p, demand)
+
         costs.append(inv.total_cost)
         holds.append(sum(r["holding_cost"] for r in inv.history))
         shorts.append(sum(r["shortage_cost"] for r in inv.history))
         expiries.append(sum(r["expiry_cost"] for r in inv.history))
+
+    # Restore original state
+    forecaster.training_tail = list(original_tail)
+    forecaster.revealed_demands = []
 
     print(f"\nMonte Carlo Backtest ({n_sims} simulations)")
     print(f"  Mean cost:   {np.mean(costs):.0f}")
@@ -204,6 +219,9 @@ def main():
 
         # Execute period
         result = inv.step(order, demand)
+
+        # Update forecaster with revealed demand (adaptive lag features)
+        forecaster.update_with_demand(test_rows, period, demand)
 
         # Display results
         print(f"\n  Results:")
