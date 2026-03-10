@@ -76,16 +76,19 @@ def compute_recommended_order(inv, forecaster, test_rows, period):
     # So effective coverage = existing_at_t2 + order.
     # Unsold order units at end of t+2 become age_1 at t+3 (second chance to sell).
 
-    periods_remaining = n_periods - (period + 2)  # how many periods from arrival to end
+    # How many periods can this order actually serve?
+    # Order arrives at t+2 (age_0), survives to t+3 (age_1), expires end of t+3.
+    # So it can serve demand at t+2 and t+3 (if t+3 exists in the game).
+    can_serve = min(2, n_periods - (period + 2))  # 1 or 2 periods of useful life
 
-    # Adjust target quantile based on remaining periods (taper at end-game)
-    # With shelf_life=2, order at t serves t+2 and t+3. If t+3 is beyond the game,
-    # any unsold units at t+2 expire at end of t+2 (or t+3 if it exists but is last).
-    if periods_remaining <= 1:
-        target_quantile = 0.50  # very conservative at the end
-    elif periods_remaining <= 2:
+    # Taper target quantile only when the order has limited selling opportunity
+    if can_serve <= 0:
+        target_quantile = 0.50
+    elif can_serve == 1:
+        # Order arrives at the last period - only one chance to sell, no carryover
         target_quantile = 0.75
-    elif periods_remaining <= 3:
+    elif n_periods - (period + 2) <= 2:
+        # Order serves 2 periods but those are the final 2 - slight taper
         target_quantile = 0.90
     else:
         target_quantile = 0.95
@@ -115,6 +118,33 @@ def run_backtest(forecaster, test_rows, demands):
         inv.step(order, demands[period])
     inv.summary()
     return inv.total_cost
+
+
+def run_monte_carlo(forecaster, test_rows, df, n_sims=500, seed=42):
+    """Monte Carlo backtest: sample demands from historical distribution."""
+    import numpy as np
+    np.random.seed(seed)
+    known = df.dropna(subset=["sales"])["sales"].values.astype(int)
+    costs, holds, shorts, expiries = [], [], [], []
+
+    for _ in range(n_sims):
+        inv = PerishableInventory()
+        for p in range(len(test_rows)):
+            order = compute_recommended_order(inv, forecaster, test_rows, p)
+            demand = int(np.random.choice(known))
+            inv.step(order, demand)
+        costs.append(inv.total_cost)
+        holds.append(sum(r["holding_cost"] for r in inv.history))
+        shorts.append(sum(r["shortage_cost"] for r in inv.history))
+        expiries.append(sum(r["expiry_cost"] for r in inv.history))
+
+    print(f"\nMonte Carlo Backtest ({n_sims} simulations)")
+    print(f"  Mean cost:   {np.mean(costs):.0f}")
+    print(f"  Median cost: {np.median(costs):.0f}")
+    print(f"  Std dev:     {np.std(costs):.0f}")
+    print(f"  P10-P90:     {np.percentile(costs,10):.0f} - {np.percentile(costs,90):.0f}")
+    print(f"  Breakdown:   hold={np.mean(holds):.0f}, short={np.mean(shorts):.0f}, expiry={np.mean(expiries):.0f}")
+    return costs
 
 
 def main():
