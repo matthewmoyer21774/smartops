@@ -119,49 +119,6 @@ def run_backtest(forecaster, test_rows, demands):
     return inv.total_cost
 
 
-def run_monte_carlo(forecaster, test_rows, df, n_sims=500, seed=42):
-    """Monte Carlo backtest: sample demands from historical distribution.
-
-    Each simulation uses adaptive lag updates so the forecaster learns
-    from the simulated demands, just like in live play.
-    """
-    np.random.seed(seed)
-    known = df.dropna(subset=["sales"])["sales"].values.astype(int)
-    costs, holds, shorts, expiries = [], [], [], []
-
-    original_rows = [dict(r) for r in test_rows]
-    original_tail = list(forecaster.training_tail) if forecaster.training_tail else []
-
-    for _ in range(n_sims):
-        inv = PerishableInventory()
-        sim_rows = [dict(r) for r in original_rows]
-        forecaster.training_tail = list(original_tail)
-        forecaster.revealed_demands = []
-
-        for p in range(len(sim_rows)):
-            order = compute_recommended_order(inv, forecaster, sim_rows, p)
-            demand = int(np.random.choice(known))
-            inv.step(order, demand)
-            forecaster.update_with_demand(sim_rows, p, demand)
-
-        costs.append(inv.total_cost)
-        holds.append(sum(r["holding_cost"] for r in inv.history))
-        shorts.append(sum(r["shortage_cost"] for r in inv.history))
-        expiries.append(sum(r["expiry_cost"] for r in inv.history))
-
-    # Restore original state
-    forecaster.training_tail = list(original_tail)
-    forecaster.revealed_demands = []
-
-    print(f"\nMonte Carlo Backtest ({n_sims} simulations)")
-    print(f"  Mean cost:   {np.mean(costs):.0f}")
-    print(f"  Median cost: {np.median(costs):.0f}")
-    print(f"  Std dev:     {np.std(costs):.0f}")
-    print(f"  P10-P90:     {np.percentile(costs,10):.0f} - {np.percentile(costs,90):.0f}")
-    print(f"  Breakdown:   hold={np.mean(holds):.0f}, short={np.mean(shorts):.0f}, expiry={np.mean(expiries):.0f}")
-    return costs
-
-
 def main():
     print("=" * 60)
     print("  PERISHABLE INVENTORY GAME - SKU 2921141")
