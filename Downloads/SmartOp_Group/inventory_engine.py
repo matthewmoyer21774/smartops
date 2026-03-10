@@ -72,10 +72,11 @@ class PerishableInventory:
 
         # --- 3. End of period: expiry and holding ---
         expired = self.on_hand[1]  # age_1 units that weren't sold expire
-        holding_units = self.on_hand[0] + self.on_hand[1]  # holding on all remaining before expiry removal
 
-        # Actually remove expired units
-        # Age transition: age_0 becomes age_1 for next period
+        # Holding cost only on units that have NOT expired (assignment spec)
+        holding_units = self.on_hand[0]  # only non-expired units
+
+        # Remove expired units, age transition: age_0 becomes age_1 for next period
         new_age1 = self.on_hand[0]  # today's fresh becomes tomorrow's old
         self.on_hand[0] = 0
         self.on_hand[1] = new_age1
