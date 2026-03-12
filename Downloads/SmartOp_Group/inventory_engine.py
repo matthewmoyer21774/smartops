@@ -18,7 +18,7 @@ class PerishableInventory:
     def __init__(self, on_hand=None, pipeline=None):
         # Starting position: [5, 4, 3]
         # 5 arriving next day, 4 = age_0 (delivered today), 3 = age_1 (delivered yesterday)
-        self.on_hand = list(on_hand or [4, 3])   # [age_0, age_1]
+        self.on_hand = list(on_hand or [4, 3])  # [age_0, age_1]
         self.pipeline = list(pipeline or [5, 0])  # [arrives next period, arrives in 2]
         self.total_cost = 0.0
         self.period = 0
@@ -51,11 +51,11 @@ class PerishableInventory:
 
         # --- 1. Start of period: receive shipment ---
         arrived = self.pipeline[0]
-        self.on_hand[0] += arrived  # arrived units are fresh (age_0)
+        # self.on_hand[0] += arrived  # arrived units are fresh (age_0)
 
         # Update pipeline: shift and add new order
-        self.pipeline[0] = self.pipeline[1]
-        self.pipeline[1] = order_qty
+        self.pipeline[0] = order_qty
+        # self.pipeline[1] = order_qty
 
         # --- 2. During period: sell FIFO (oldest = age_1 first) ---
         remaining_demand = actual_demand
@@ -73,13 +73,14 @@ class PerishableInventory:
         # --- 3. End of period: expiry and holding ---
         expired = self.on_hand[1]  # age_1 units that weren't sold expire
 
-        # Holding cost only on units that have NOT expired (assignment spec)
-        holding_units = self.on_hand[0]  # only non-expired units
-
-        # Remove expired units, age transition: age_0 becomes age_1 for next period
-        new_age1 = self.on_hand[0]  # today's fresh becomes tomorrow's old
-        self.on_hand[0] = 0
+        # Assuming its the next day, update stock
+        new_age1 = self.on_hand[0]
         self.on_hand[1] = new_age1
+        self.on_hand[0] = arrived
+
+        # Holding cost only on units that have NOT expired, i.e. the ones that
+        # have been held over night
+        holding_units = self.on_hand[1]  # only non-expired units
 
         # --- 4. Compute costs ---
         h_cost = holding_units * self.holding_cost
@@ -140,8 +141,10 @@ if __name__ == "__main__":
     for i, d in enumerate(demands):
         order = 5  # constant order for testing
         result = inv.step(order, d)
-        print(f"Period {i}: demand={d}, order={order}, sold={result['sold']}, "
-              f"shortage={result['shortage']}, expired={result['expired']}, "
-              f"cost={result['period_cost']}, on_hand={result['on_hand_after']}, "
-              f"pipeline={result['pipeline_after']}")
+        print(
+            f"Period {i}: demand={d}, order={order}, sold={result['sold']}, "
+            f"shortage={result['shortage']}, expired={result['expired']}, "
+            f"cost={result['period_cost']}, on_hand={result['on_hand_after']}, "
+            f"pipeline={result['pipeline_after']}"
+        )
     inv.summary()
