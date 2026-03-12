@@ -114,16 +114,17 @@ FEATURES = [
 LGB_PARAMS = {
     "verbose": -1,
     "n_jobs": 1,
-    "num_leaves": 31,
-    "min_child_samples": 15,
-    "learning_rate": 0.03,
-    "feature_fraction": 0.8,
-    "bagging_fraction": 0.8,
-    "bagging_freq": 1,
-    "lambda_l1": 0.1,
-    "lambda_l2": 1.0,
+    "num_leaves": 28,
+    "min_child_samples": 13,
+    "learning_rate": 0.029324,
+    "feature_fraction": 0.976227,
+    "bagging_fraction": 0.494734,
+    "bagging_freq": 6,
+    "lambda_l1": 0.010183,
+    "lambda_l2": 0.041541,
+    "max_depth": 6,
+    "min_gain_to_split": 0.530049,
 }
-
 
 class DemandForecaster:
     def __init__(self, quantiles=(0.50, 0.75, 0.90, 0.95)):
@@ -453,3 +454,4 @@ if __name__ == "__main__":
         m = forecaster.predict_mean(row)
         print(f"  {row['date'].strftime('%Y-%m-%d')} dow={int(row['dow'])} promo={int(row['PROMO_01'])} "
               f"-> mean={m:.1f}, q50={q[0.5]}, q75={q[0.75]}, q90={q[0.9]}, q95={q[0.95]}")
+
