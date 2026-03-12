@@ -86,11 +86,6 @@ def train_models(models, df_train, df_val, features, target="sales"):
     return models
 
 
-import numpy as np
-import pandas as pd
-from sklearn.metrics import mean_absolute_error, mean_squared_error
-
-
 def evaluate_models_rolling_with_metrics(
     models, df, features, target="sales", horizon=4, lag_features=None
 ):
@@ -123,34 +118,33 @@ def evaluate_models_rolling_with_metrics(
     median_metrics = {name: {"MAE": [], "RMSE": []} for name in models.keys()}
 
     for step in range(horizon):
-        X = df_copy[features].values
-        y_true = df_copy[target].values
-
         for name, model in models.items():
-            # Quantile predictions
-            preds = model.predict(X)  # dict {quantile: array}
+            # Make a fresh copy of df for this model and step
+            df_copy = df.copy()
+
+            # Apply previous predictions if step > 0
+            if lag_features is not None and step > 0:
+                for lag_col in lag_features:
+                    if "lag" in lag_col:  # sales_lag1, sales_lag2, etc.
+                        lag_num = int(lag_col.split("_")[-1].replace("lag", ""))
+                        df_copy[lag_col] = df_copy[target].shift(lag_num)
+                    elif "roll" in lag_col:
+                        df_copy[lag_col] = df_copy[target].shift(1)
+                df_copy = df_copy.dropna(subset=features + [target])
+
+            X = df_copy[features].values
+            y_true = df_copy[target].values
+
+            # Predictions
+            preds = model.predict(X)
             for q, p in preds.items():
                 results[name][q].append(pinball_loss(y_true, p, q))
 
-            # Median point prediction
             y_median = model.predict_point(X, strategy="median")
             median_metrics[name]["MAE"].append(mean_absolute_error(y_true, y_median))
             median_metrics[name]["RMSE"].append(
                 root_mean_squared_error(y_true, y_median)
             )
-
-            # Update lag features if provided
-            if lag_features is not None:
-                for lag_col in lag_features:
-                    if "lag" in lag_col:  # sales_lag1, sales_lag2, etc.
-                        lag_num = int(lag_col.split("_")[-1].replace("lag", ""))
-                        df_copy[lag_col] = df_copy[target].shift(lag_num)
-                    elif (
-                        "roll" in lag_col
-                    ):  # rolling features, just shift by 1 for next step
-                        df_copy[lag_col] = df_copy[target].shift(1)
-                # Drop NaNs introduced by shifting
-                df_copy = df_copy.dropna(subset=features + [target])
 
     return results, median_metrics
 
