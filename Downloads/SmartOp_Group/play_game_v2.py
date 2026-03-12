@@ -24,7 +24,7 @@ from inventory_engine import PerishableInventory
 SHORTAGE_COST = 19
 HOLDING_COST = 1
 EXPIRY_COST = 9
-P_EXPIRE = 0.5  # probability that excess inventory expires (shelf_life=2)
+P_EXPIRE = 0.45  # probability that excess inventory expires (shelf_life=2)
 CO_EFFECTIVE = HOLDING_COST + P_EXPIRE * EXPIRY_COST  # 5.5
 CRITICAL_FRACTILE = SHORTAGE_COST / (SHORTAGE_COST + CO_EFFECTIVE)  # 0.776
 
@@ -177,6 +177,7 @@ def main():
 
     for period in range(n_periods):
         row = test_rows[period]
+        print(row)
         date_str = row["date"].strftime("%Y-%m-%d (%a)")
         promo = "PROMO" if row["PROMO_01"] else "     "
         price = row["PRC_2_norm"]
@@ -191,7 +192,7 @@ def main():
         )
         print(f"{'-'*60}")
         print(f"  On-hand: {state['on_hand']} (total={state['on_hand_total']})")
-        print(f"  Pipeline: {state['pipeline']} (arrives next / in 2)")
+        print(f"  Pipeline: {state['pipeline']} (arrives next)")
         print(f"  Cumulative cost: {state['total_cost']:.0f}")
         print(
             f"\n  Demand forecast: mean={mean_d:.1f}, "

@@ -7,10 +7,12 @@ Techniques inspired by Van Hevel (2025) master thesis on probabilistic
 forecasting: CRPS evaluation, PACF-guided lag selection, z-score
 normalization, and residual diagnostics.
 """
+
 import pandas as pd
 import numpy as np
 import lightgbm as lgb
 import warnings
+
 warnings.filterwarnings("ignore")
 
 
@@ -22,7 +24,9 @@ def load_and_prepare(parquet_path="df_6_art_train_project.parquet", art_id=29211
     sub109 = df_all[(df_all["SUBGROUP"] == 109) & (df_all["art_id"] != art_id)].copy()
     if len(sub109) > 0:
         sub109_daily = sub109.groupby("date")["sales"].mean()
-        sub109_roll3 = sub109_daily.rolling(3, min_periods=1).mean().rename("subgroup_sales_roll3")
+        sub109_roll3 = (
+            sub109_daily.rolling(3, min_periods=1).mean().rename("subgroup_sales_roll3")
+        )
     else:
         sub109_roll3 = pd.Series(dtype=float, name="subgroup_sales_roll3")
 
@@ -54,12 +58,16 @@ def load_and_prepare(parquet_path="df_6_art_train_project.parquet", art_id=29211
     # --- Rolling features ---
     df["sales_roll3"] = df["sales"].shift(1).rolling(3, min_periods=1).mean()
     df["sales_roll7"] = df["sales"].shift(1).rolling(7, min_periods=1).mean()
-    df["sales_roll3_std"] = df["sales"].shift(1).rolling(3, min_periods=1).std().fillna(0)
+    df["sales_roll3_std"] = (
+        df["sales"].shift(1).rolling(3, min_periods=1).std().fillna(0)
+    )
     df["sales_roll7_median"] = df["sales"].shift(1).rolling(7, min_periods=1).median()
 
     # --- Z-score normalization (Van Hevel thesis technique) ---
-    roll7_std = df["sales"].shift(1).rolling(7, min_periods=2).std().fillna(1).replace(0, 1)
-    df["sales_zscore"] = (df["sales_lag1"] - df["sales_roll7"]) / roll7_std
+    roll7_std = (
+        df["sales"].shift(1).rolling(7, min_periods=2).std().fillna(1).replace(0, 1)
+    )
+    df["sales_zscore"] = (df["sales_lag1"] - df["sales_lag7"]) / roll7_std
 
     # --- Interaction features ---
     df["sat_x_promo"] = df["is_saturday"] * df["PROMO_01"]
@@ -73,7 +81,9 @@ def load_and_prepare(parquet_path="df_6_art_train_project.parquet", art_id=29211
     df["price_roll7_mean"] = df["PRC_2_norm"].shift(1).rolling(7, min_periods=1).mean()
 
     # --- Holiday enhancement ---
-    df["near_holiday"] = df[["OFFICIAL_HOLIDAY_01_f1", "OFFICIAL_HOLIDAY_01_l1"]].max(axis=1)
+    df["near_holiday"] = df[["OFFICIAL_HOLIDAY_01_f1", "OFFICIAL_HOLIDAY_01_l1"]].max(
+        axis=1
+    )
 
     # --- Derived ---
     promo_shifted = df["PROMO_01"].shift(1)
@@ -81,34 +91,162 @@ def load_and_prepare(parquet_path="df_6_art_train_project.parquet", art_id=29211
     no_promo_mask = promo_shifted != 1
     df["days_since_last_promo"] = no_promo_mask.groupby(promo_groups).cumsum().fillna(0)
 
+    # ---------------------------------------------------
+    # HOLIDAY DISTANCE FEATURES
+    # ---------------------------------------------------
+
+    df["is_holiday"] = (
+        (df["OFFICIAL_HOLIDAY_01_f1"] == 1) | (df["OFFICIAL_HOLIDAY_01_l1"] == 1)
+    ).astype(int)
+
+    # Days since holiday
+    last_holiday = None
+    days_since = []
+
+    for _, row in df.iterrows():
+
+        if row["is_holiday"] == 1:
+            last_holiday = row["date"]
+            days_since.append(0)
+
+        elif last_holiday is None:
+            days_since.append(999)
+
+        else:
+            days_since.append((row["date"] - last_holiday).days)
+
+    df["days_since_holiday"] = days_since
+
+    # Days to next holiday
+
+    next_holiday = None
+    days_to = [None] * len(df)
+
+    for i in reversed(range(len(df))):
+
+        if df.iloc[i]["is_holiday"] == 1:
+            next_holiday = df.iloc[i]["date"]
+            days_to[i] = 0
+
+        elif next_holiday is None:
+            days_to[i] = 999
+
+        else:
+            days_to[i] = (next_holiday - df.iloc[i]["date"]).days
+
+    df["days_to_holiday"] = days_to
+
+    # Clip to avoid extreme values
+    df["days_since_holiday"] = df["days_since_holiday"].clip(0, 14)
+    df["days_to_holiday"] = df["days_to_holiday"].clip(0, 14)
+
+    # Decaying holiday signals
+    df["holiday_proximity"] = np.exp(-df["days_to_holiday"] / 3)
+    df["post_holiday_decay"] = np.exp(-df["days_since_holiday"] / 3)
+
+    df["near_holiday"] = (
+        (df["days_to_holiday"] <= 2) | (df["days_since_holiday"] <= 2)
+    ).astype(int)
+
+    # ---------------------------------------------------
+    # PROMO ANTICIPATION FEATURES
+    # ---------------------------------------------------
+
+    next_promo = None
+    days_to_promo = [None] * len(df)
+
+    for i in reversed(range(len(df))):
+
+        if df.iloc[i]["PROMO_01"] == 1:
+            next_promo = df.iloc[i]["date"]
+            days_to_promo[i] = 0
+
+        elif next_promo is None:
+            days_to_promo[i] = 999
+
+        else:
+            days_to_promo[i] = (next_promo - df.iloc[i]["date"]).days
+
+    df["days_to_promo"] = pd.Series(days_to_promo).clip(0, 14)
+
+    # Decay signal
+    df["promo_proximity"] = np.exp(-df["days_to_promo"] / 3)
+
     # Fill NaN lag features for early rows
-    for col in ["sales_lag1", "sales_lag2", "sales_lag3", "sales_lag7",
-                "sales_roll3", "sales_roll7", "sales_roll3_std", "sales_roll7_median",
-                "sales_zscore", "price_lag1", "price_change", "price_roll7_mean"]:
+    for col in [
+        "sales_lag1",
+        "sales_lag2",
+        "sales_lag3",
+        "sales_lag7",
+        "sales_roll3",
+        "sales_roll7",
+        "sales_roll3_std",
+        "sales_roll7_median",
+        "sales_zscore",
+        "price_lag1",
+        "price_change",
+        "price_roll7_mean",
+    ]:
         df[col] = df[col].fillna(0)
+
+    df["sales_diff1"] = df["sales_lag1"] - df["sales_lag2"]
+    df["sales_diff2"] = df["sales_lag2"] - df["sales_lag3"]
+
+    df["sales_momentum"] = df["sales_lag1"] / (df["sales_roll7"] + 1)
+
+    df["sales_trend"] = df["sales_roll3"] - df["sales_roll7"]
 
     return df
 
 
 FEATURES = [
     # Calendar
-    "dow", "is_saturday", "is_friday", "is_monday",
-    "week_of_year", "month",
+    "dow",
+    "is_saturday",
+    "is_friday",
+    "is_monday",
+    "week_of_year",
+    # "month",
     # Lag
-    "sales_lag1", "sales_lag2", "sales_lag3", "sales_lag7",
+    "sales_lag1",
+    "sales_lag2",
+    "sales_lag3",
+    "sales_lag7",
     # Rolling
-    "sales_roll3", "sales_roll7", "sales_roll3_std", "sales_roll7_median",
+    "sales_roll3",
+    "sales_roll7",
+    "sales_roll3_std",
+    # "sales_roll7_median",
     "sales_zscore",
     # Promo / price
-    "PROMO_01", "PROMO_DEPTH", "PRC_2_norm",
-    "sat_x_promo", "fri_x_promo", "promo_x_depth", "price_x_promo",
-    "price_lag1", "price_change", "price_roll7_mean",
+    "PROMO_01",
+    "PROMO_DEPTH",
+    "PRC_2_norm",
+    # "sat_x_promo",
+    # "fri_x_promo",
+    # "promo_x_depth",
+    "price_x_promo",
+    "price_lag1",
+    "price_change",
+    "price_roll7_mean",
     # Holiday
-    "OFFICIAL_HOLIDAY_01_f1", "OFFICIAL_HOLIDAY_01_l1", "near_holiday",
+    "OFFICIAL_HOLIDAY_01_f1",
+    "OFFICIAL_HOLIDAY_01_l1",
+    # "near_holiday",
     # Cross-SKU
     "subgroup_sales_roll3",
     # Derived
     "days_since_last_promo",
+    # new ones
+    # "promo_proximity",
+    "days_to_promo",
+    # "near_holiday",
+    # "post_holiday_decay",
+    # "holiday_proximity",
+    # "sales_diff1",
+    # "sales_diff2",
+    # "sales_momentum",
+    "sales_trend",
 ]
 
 LGB_PARAMS = {
@@ -125,6 +263,7 @@ LGB_PARAMS = {
     "max_depth": 6,
     "min_gain_to_split": 0.530049,
 }
+
 
 class DemandForecaster:
     def __init__(self, quantiles=(0.50, 0.75, 0.90, 0.95)):
@@ -161,21 +300,27 @@ class DemandForecaster:
         X_trainval = trainval[FEATURES].values
         y_trainval = trainval["sales"].values
 
-        print(f"  Split: Train={len(train_data)} | Val={len(val_data)} | Test={test_size} held out")
+        print(
+            f"  Split: Train={len(train_data)} | Val={len(val_data)} | Test={test_size} held out"
+        )
 
         # --- Mean model (Poisson) ---
         ds_train = lgb.Dataset(X_train, label=y_train)
         ds_val = lgb.Dataset(X_val, label=y_val, reference=ds_train)
         params_mean = {**LGB_PARAMS, "objective": "poisson"}
         model_es = lgb.train(
-            params_mean, ds_train, valid_sets=[ds_val],
+            params_mean,
+            ds_train,
+            valid_sets=[ds_val],
             num_boost_round=1000,
             callbacks=[lgb.early_stopping(50), lgb.log_evaluation(0)],
         )
         best_rounds_mean = model_es.best_iteration
 
         ds_full = lgb.Dataset(X_trainval, label=y_trainval)
-        self.mean_model = lgb.train(params_mean, ds_full, num_boost_round=best_rounds_mean)
+        self.mean_model = lgb.train(
+            params_mean, ds_full, num_boost_round=best_rounds_mean
+        )
         print(f"  Mean model: {best_rounds_mean} rounds (early stopping)")
 
         # --- Quantile models ---
@@ -184,7 +329,9 @@ class DemandForecaster:
             ds_train_q = lgb.Dataset(X_train, label=y_train)
             ds_val_q = lgb.Dataset(X_val, label=y_val, reference=ds_train_q)
             model_es = lgb.train(
-                params_q, ds_train_q, valid_sets=[ds_val_q],
+                params_q,
+                ds_train_q,
+                valid_sets=[ds_val_q],
                 num_boost_round=1000,
                 callbacks=[lgb.early_stopping(50), lgb.log_evaluation(0)],
             )
@@ -236,18 +383,49 @@ class DemandForecaster:
             idx = len(all_demands) - 1  # index of latest revealed demand
 
             # Update lag features
-            for lag, feat in [(1, "sales_lag1"), (2, "sales_lag2"),
-                              (3, "sales_lag3"), (7, "sales_lag7")]:
+            for lag, feat in [
+                (1, "sales_lag1"),
+                (2, "sales_lag2"),
+                (3, "sales_lag3"),
+                (7, "sales_lag7"),
+            ]:
                 look_back = idx - offset - (lag - 1)
                 if 0 <= look_back < len(all_demands):
                     test_rows[future_p][feat] = all_demands[look_back]
+
+                # -----------------------------
+                # Update momentum features
+                # -----------------------------
+
+                lag1 = test_rows[future_p].get("sales_lag1")
+                lag2 = test_rows[future_p].get("sales_lag2")
+                lag3 = test_rows[future_p].get("sales_lag3")
+
+                roll3 = test_rows[future_p].get("sales_roll3")
+                roll7 = test_rows[future_p].get("sales_roll7")
+
+                # sales_diff1
+                if lag1 is not None and lag2 is not None:
+                    test_rows[future_p]["sales_diff1"] = lag1 - lag2
+
+                # sales_diff2
+                if lag2 is not None and lag3 is not None:
+                    test_rows[future_p]["sales_diff2"] = lag2 - lag3
+
+                # sales_momentum
+                if lag1 is not None and roll7 is not None:
+                    test_rows[future_p]["sales_momentum"] = lag1 / (roll7 + 1)
+
+                # sales_trend
+                if roll3 is not None and roll7 is not None:
+                    test_rows[future_p]["sales_trend"] = roll3 - roll7
 
             # Update rolling features
             # sales_roll3: mean of last 3 demands
             start_3 = idx - offset - 2
             end_3 = idx - offset + 1
             if start_3 >= 0:
-                vals = all_demands[max(0, start_3):end_3]
+                vals = all_demands[max(0, start_3) : end_3]
                 if vals:
                     test_rows[future_p]["sales_roll3"] = np.mean(vals)
 
@@ -255,19 +433,19 @@ class DemandForecaster:
             start_7 = idx - offset - 6
             end_7 = idx - offset + 1
             if start_7 >= 0:
-                vals = all_demands[max(0, start_7):end_7]
+                vals = all_demands[max(0, start_7) : end_7]
                 if vals:
                     test_rows[future_p]["sales_roll7"] = np.mean(vals)
 
             # sales_roll3_std
             if start_3 >= 0:
-                vals = all_demands[max(0, start_3):end_3]
+                vals = all_demands[max(0, start_3) : end_3]
                 if len(vals) >= 2:
                     test_rows[future_p]["sales_roll3_std"] = float(np.std(vals, ddof=1))
 
             # sales_roll7_median
             if start_7 >= 0:
-                vals = all_demands[max(0, start_7):end_7]
+                vals = all_demands[max(0, start_7) : end_7]
                 if vals:
                     test_rows[future_p]["sales_roll7_median"] = float(np.median(vals))
 
@@ -275,11 +453,13 @@ class DemandForecaster:
             roll7_val = test_rows[future_p].get("sales_roll7", 0)
             lag1_val = test_rows[future_p].get("sales_lag1", 0)
             if start_7 >= 0:
-                vals = all_demands[max(0, start_7):end_7]
+                vals = all_demands[max(0, start_7) : end_7]
                 if len(vals) >= 2:
                     std_val = float(np.std(vals, ddof=1))
                     if std_val > 0:
-                        test_rows[future_p]["sales_zscore"] = (lag1_val - roll7_val) / std_val
+                        test_rows[future_p]["sales_zscore"] = (
+                            lag1_val - roll7_val
+                        ) / std_val
                     else:
                         test_rows[future_p]["sales_zscore"] = 0
 
@@ -315,7 +495,9 @@ class DemandForecaster:
             pinball = np.mean(np.where(errors >= 0, q * errors, (q - 1) * errors))
             coverage = np.mean(y_test <= preds)
             all_preds[q] = preds
-            print(f"  q={q:.2f}: pinball={pinball:.3f}, coverage={coverage:.1%} (target {q:.0%})")
+            print(
+                f"  q={q:.2f}: pinball={pinball:.3f}, coverage={coverage:.1%} (target {q:.0%})"
+            )
 
         # CRPS (quantile-based approximation)
         crps = self._compute_crps(y_test, all_preds)
@@ -347,9 +529,16 @@ class DemandForecaster:
         X_test = test[FEATURES].values
         y_test = test["sales"].values
 
-        OLD_FEATURES = ["dow", "is_saturday", "is_friday", "PROMO_01",
-                        "PROMO_DEPTH", "PRC_2_norm",
-                        "OFFICIAL_HOLIDAY_01_f1", "OFFICIAL_HOLIDAY_01_l1"]
+        OLD_FEATURES = [
+            "dow",
+            "is_saturday",
+            "is_friday",
+            "PROMO_01",
+            "PROMO_DEPTH",
+            "PRC_2_norm",
+            "OFFICIAL_HOLIDAY_01_f1",
+            "OFFICIAL_HOLIDAY_01_l1",
+        ]
 
         X_test_old = test[OLD_FEATURES].values
         X_train_old = train[OLD_FEATURES].values
@@ -358,28 +547,44 @@ class DemandForecaster:
         print(f"\n{'='*60}")
         print(f"  OLD vs NEW Model Comparison (test={n_test})")
         print(f"{'='*60}")
-        print(f"{'Quantile':<10} {'Old Pinball':>12} {'New Pinball':>12} {'Improvement':>12}")
+        print(
+            f"{'Quantile':<10} {'Old Pinball':>12} {'New Pinball':>12} {'Improvement':>12}"
+        )
         print(f"{'-'*46}")
 
         for q in self.quantiles:
             # Old model
             ds_old = lgb.Dataset(X_train_old, label=y_train_old)
             model_old = lgb.train(
-                {"objective": "quantile", "alpha": q, "verbose": -1, "n_jobs": 1,
-                 "num_leaves": 16, "min_child_samples": 20, "learning_rate": 0.05},
-                ds_old, num_boost_round=300,
+                {
+                    "objective": "quantile",
+                    "alpha": q,
+                    "verbose": -1,
+                    "n_jobs": 1,
+                    "num_leaves": 16,
+                    "min_child_samples": 20,
+                    "learning_rate": 0.05,
+                },
+                ds_old,
+                num_boost_round=300,
             )
             preds_old = model_old.predict(X_test_old)
             errors_old = y_test - preds_old
-            pinball_old = np.mean(np.where(errors_old >= 0, q * errors_old, (q - 1) * errors_old))
+            pinball_old = np.mean(
+                np.where(errors_old >= 0, q * errors_old, (q - 1) * errors_old)
+            )
 
             # New model (production)
             preds_new = self.models[q].predict(X_test)
             errors_new = y_test - preds_new
-            pinball_new = np.mean(np.where(errors_new >= 0, q * errors_new, (q - 1) * errors_new))
+            pinball_new = np.mean(
+                np.where(errors_new >= 0, q * errors_new, (q - 1) * errors_new)
+            )
 
             improvement = (pinball_old - pinball_new) / pinball_old * 100
-            print(f"  q{q:.2f}     {pinball_old:>10.3f}   {pinball_new:>10.3f}   {improvement:>+10.1f}%")
+            print(
+                f"  q{q:.2f}     {pinball_old:>10.3f}   {pinball_new:>10.3f}   {improvement:>+10.1f}%"
+            )
 
     def _compute_crps(self, y_true, quantile_preds):
         """CRPS approximation from quantile predictions."""
@@ -427,6 +632,7 @@ def _print_pacf(y, nlags=10):
     """Print PACF values using statsmodels if available."""
     try:
         from statsmodels.tsa.stattools import pacf
+
         pacf_vals = pacf(y, nlags=nlags, method="ols")
         print(f"\n  PACF analysis (partial autocorrelation):")
         threshold = 1.96 / np.sqrt(len(y))
@@ -452,6 +658,7 @@ if __name__ == "__main__":
     for row in test_rows[:5]:
         q = forecaster.predict_quantiles(row)
         m = forecaster.predict_mean(row)
-        print(f"  {row['date'].strftime('%Y-%m-%d')} dow={int(row['dow'])} promo={int(row['PROMO_01'])} "
-              f"-> mean={m:.1f}, q50={q[0.5]}, q75={q[0.75]}, q90={q[0.9]}, q95={q[0.95]}")
-
+        print(
+            f"  {row['date'].strftime('%Y-%m-%d')} dow={int(row['dow'])} promo={int(row['PROMO_01'])} "
+            f"-> mean={m:.1f}, q50={q[0.5]}, q75={q[0.75]}, q90={q[0.9]}, q95={q[0.95]}"
+        )
