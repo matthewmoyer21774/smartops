@@ -114,14 +114,16 @@ FEATURES = [
 LGB_PARAMS = {
     "verbose": -1,
     "n_jobs": 1,
-    "num_leaves": 31,
-    "min_child_samples": 15,
-    "learning_rate": 0.03,
-    "feature_fraction": 0.8,
-    "bagging_fraction": 0.8,
-    "bagging_freq": 1,
-    "lambda_l1": 0.1,
-    "lambda_l2": 1.0,
+    "num_leaves": 58,
+    "min_child_samples": 16,
+    "learning_rate": 0.149863,
+    "feature_fraction": 0.552516,
+    "bagging_fraction": 0.856218,
+    "bagging_freq": 4,
+    "lambda_l1": 4.493257,
+    "lambda_l2": 1.067318,
+    "max_depth": 11,
+    "min_gain_to_split": 0.051064,
 }
 
 
